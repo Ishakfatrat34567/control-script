@@ -1,5 +1,15 @@
 
+if not RunService:IsClient() then
+	warn("Controller script must run on the client (LocalScript).")
+	return
+end
+
 local localPlayer = Players.LocalPlayer
+while not localPlayer do
+	task.wait()
+	localPlayer = Players.LocalPlayer
+end
+
 local playerGui = localPlayer:WaitForChild("PlayerGui")
 
 local authorizedControllers = {}
