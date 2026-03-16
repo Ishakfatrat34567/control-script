@@ -1,1 +1,509 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TextChatService = game:GetService("TextChatService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+local authorizedControllers = {}
+local primaryController = nil
+local currentController = nil
+local motionConnection = nil
+local motionMode = "stop"
+
+local ORBIT_RADIUS = 8
+local ORBIT_HEIGHT = 3
+local ORBIT_SPEED = 1.8
+local FOLLOW_SPACING = 4
+local DETECTION_RADIUS = 18
+
+local chatConnections = {}
+local buttonByPlayer = {}
+
+local function characterAndRoot(player)
+	local character = player and player.Character
+	if not character then
+		return nil, nil
+	end
+	return character, character:FindFirstChild("HumanoidRootPart")
+end
+
+local function normalizeMessage(message)
+	return string.lower((message or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function sendChatMessage(message)
+	if not message or message == "" then
+		return
+	end
+
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local textChannels = TextChatService:FindFirstChild("TextChannels")
+		local general = textChannels and textChannels:FindFirstChild("RBXGeneral")
+		if general then
+			general:SendAsync(message)
+		end
+		return
+	end
+
+	local legacyEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+	local sayRequest = legacyEvents and legacyEvents:FindFirstChild("SayMessageRequest")
+	if sayRequest then
+		sayRequest:FireServer(message, "All")
+	end
+end
+
+local function clearMotion()
+	if motionConnection then
+		motionConnection:Disconnect()
+		motionConnection = nil
+	end
+	motionMode = "stop"
+end
+
+local function moveNearTarget(targetRoot, offset)
+	local _, localRoot = characterAndRoot(localPlayer)
+	if not localRoot or not targetRoot then
+		return
+	end
+	localRoot.CFrame = targetRoot.CFrame * offset
+end
+
+local function getCompanionIndex(targetRoot)
+	local companions = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= currentController then
+			local _, root = characterAndRoot(player)
+			if root and (root.Position - targetRoot.Position).Magnitude <= DETECTION_RADIUS then
+				table.insert(companions, player)
+			end
+		end
+	end
+
+	table.sort(companions, function(a, b)
+		return a.UserId < b.UserId
+	end)
+
+	for index, player in ipairs(companions) do
+		if player == localPlayer then
+			return index, #companions
+		end
+	end
+
+	return 1, math.max(#companions, 1)
+end
+
+local function startMotion(mode, targetPlayer)
+	clearMotion()
+	currentController = targetPlayer
+	motionMode = mode
+	local angle = 0
+
+	motionConnection = RunService.Heartbeat:Connect(function(deltaTime)
+		if not currentController or not authorizedControllers[currentController] or currentController.Parent ~= Players then
+			clearMotion()
+			currentController = nil
+			return
+		end
+
+		local _, targetRoot = characterAndRoot(currentController)
+		if not targetRoot then
+			return
+		end
+
+		local companionIndex, companionCount = getCompanionIndex(targetRoot)
+
+		if motionMode == "follow" then
+			local spacingOffset = FOLLOW_SPACING * companionIndex
+			moveNearTarget(targetRoot, CFrame.new(0, 0, -spacingOffset))
+		elseif motionMode == "line" then
+			local spacingOffset = FOLLOW_SPACING * companionIndex
+			moveNearTarget(targetRoot, CFrame.new(0, 0, -spacingOffset))
+		elseif motionMode == "orbit" then
+			angle += deltaTime * (ORBIT_SPEED * math.pi)
+			local slotAngle = (2 * math.pi / companionCount) * (companionIndex - 1)
+			local finalAngle = angle + slotAngle
+			local x = math.cos(finalAngle) * ORBIT_RADIUS
+			local z = math.sin(finalAngle) * ORBIT_RADIUS
+			moveNearTarget(targetRoot, CFrame.new(x, ORBIT_HEIGHT, z))
+		end
+	end)
+end
+
+local function findPlayerByName(text)
+	local lookup = normalizeMessage(text)
+	if lookup == "" then
+		return nil
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if normalizeMessage(player.Name) == lookup then
+			return player
+		end
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if string.sub(normalizeMessage(player.Name), 1, #lookup) == lookup then
+			return player
+		end
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if normalizeMessage(player.DisplayName) == lookup then
+			return player
+		end
+	end
+
+	return nil
+end
+
+local function setAuthorized(player, value)
+	if not player or player == localPlayer then
+		return false
+	end
+
+	if value then
+		authorizedControllers[player] = true
+		if not primaryController then
+			primaryController = player
+		end
+		return true
+	end
+
+	if player == primaryController then
+		return false
+	end
+
+	authorizedControllers[player] = nil
+	if currentController == player then
+		clearMotion()
+		currentController = nil
+	end
+	return true
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ControllerMenu"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = UDim2.fromOffset(360, 440)
+frame.Position = UDim2.new(0.05, 0, 0.2, 0)
+frame.BackgroundColor3 = Color3.fromRGB(24, 26, 34)
+frame.BorderSizePixel = 0
+frame.Parent = screenGui
+
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 10)
+frameCorner.Parent = frame
+
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Thickness = 1.2
+frameStroke.Color = Color3.fromRGB(78, 92, 129)
+frameStroke.Transparency = 0.25
+frameStroke.Parent = frame
+
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 46)
+topBar.BackgroundColor3 = Color3.fromRGB(36, 40, 53)
+topBar.BorderSizePixel = 0
+topBar.Parent = frame
+
+local topCorner = Instance.new("UICorner")
+topCorner.CornerRadius = UDim.new(0, 10)
+topCorner.Parent = topBar
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 1, 0)
+title.Position = UDim2.fromOffset(12, 0)
+title.BackgroundTransparency = 1
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "Authorized Controllers"
+title.TextSize = 20
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = Color3.fromRGB(230, 234, 255)
+title.Parent = topBar
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Size = UDim2.new(1, -24, 0, 42)
+subtitle.Position = UDim2.fromOffset(12, 52)
+subtitle.BackgroundTransparency = 1
+subtitle.TextWrapped = true
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.Text = "Click players to auth/unauth. Commands: /follow /orbit /line /stop /say <msg> /auth <name> /unauth <name>"
+subtitle.TextSize = 12
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextColor3 = Color3.fromRGB(170, 182, 220)
+subtitle.Parent = frame
+
+local scrolling = Instance.new("ScrollingFrame")
+scrolling.Name = "PlayerList"
+scrolling.Size = UDim2.new(1, -24, 1, -118)
+scrolling.Position = UDim2.fromOffset(12, 104)
+scrolling.BackgroundColor3 = Color3.fromRGB(18, 20, 27)
+scrolling.BorderSizePixel = 0
+scrolling.ScrollBarThickness = 6
+scrolling.CanvasSize = UDim2.fromOffset(0, 0)
+scrolling.Parent = frame
+
+local scrollingCorner = Instance.new("UICorner")
+scrollingCorner.CornerRadius = UDim.new(0, 8)
+scrollingCorner.Parent = scrolling
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 8)
+listLayout.Parent = scrolling
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 10)
+listPadding.PaddingBottom = UDim.new(0, 10)
+listPadding.PaddingLeft = UDim.new(0, 10)
+listPadding.PaddingRight = UDim.new(0, 10)
+listPadding.Parent = scrolling
+
+local function refreshButtonVisual(player)
+	local button = buttonByPlayer[player]
+	if not button then
+		return
+	end
+	local stroke = button:FindFirstChildOfClass("UIStroke")
+	local isAuthorized = authorizedControllers[player] == true
+	local isPrimary = player == primaryController
+
+	if isAuthorized then
+		button.BackgroundColor3 = isPrimary and Color3.fromRGB(80, 120, 185) or Color3.fromRGB(64, 84, 150)
+		if stroke then
+			stroke.Transparency = 0
+		end
+	else
+		button.BackgroundColor3 = Color3.fromRGB(38, 45, 66)
+		if stroke then
+			stroke.Transparency = 0.55
+		end
+	end
+
+	local suffix = ""
+	if isPrimary then
+		suffix = " [PRIMARY]"
+	elseif isAuthorized then
+		suffix = " [AUTH]"
+	end
+	button.Text = player.DisplayName .. " (@" .. player.Name .. ")" .. suffix
+end
+
+local function refreshAllButtonVisuals()
+	for player in pairs(buttonByPlayer) do
+		refreshButtonVisual(player)
+	end
+end
+
+local function createPlayerButton(player)
+	if player == localPlayer then
+		return
+	end
+
+	local button = Instance.new("TextButton")
+	button.Name = player.Name
+	button.Size = UDim2.new(1, 0, 0, 42)
+	button.BackgroundColor3 = Color3.fromRGB(38, 45, 66)
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	button.Font = Enum.Font.GothamMedium
+	button.TextColor3 = Color3.fromRGB(223, 231, 255)
+	button.TextSize = 16
+	button.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+	button.Parent = scrolling
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = button
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1
+	stroke.Color = Color3.fromRGB(100, 122, 187)
+	stroke.Transparency = 0.55
+	stroke.Parent = button
+
+	buttonByPlayer[player] = button
+
+	button.MouseButton1Click:Connect(function()
+		local isAuthorized = authorizedControllers[player] == true
+		if isAuthorized then
+			setAuthorized(player, false)
+		else
+			setAuthorized(player, true)
+		end
+		refreshAllButtonVisuals()
+	end)
+
+	refreshButtonVisual(player)
+end
+
+local function refreshPlayerList()
+	buttonByPlayer = {}
+	for _, child in ipairs(scrolling:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		createPlayerButton(player)
+	end
+
+	task.wait()
+	scrolling.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y + 20)
+	refreshAllButtonVisuals()
+end
+
+local function processCommand(speaker, message)
+	if not authorizedControllers[speaker] then
+		return
+	end
+
+	local normalized = normalizeMessage(message)
+	if normalized == "/follow" then
+		startMotion("follow", speaker)
+		return
+	elseif normalized == "/orbit" then
+		startMotion("orbit", speaker)
+		return
+	elseif normalized == "/line" then
+		startMotion("line", speaker)
+		return
+	elseif normalized == "/stop" then
+		clearMotion()
+		currentController = nil
+		return
+	end
+
+	local authTarget = string.match(normalized, "^/auth%s+(.+)$")
+	if authTarget then
+		local player = findPlayerByName(authTarget)
+		if player then
+			setAuthorized(player, true)
+			refreshAllButtonVisuals()
+		end
+		return
+	end
+
+	local unauthTarget = string.match(normalized, "^/unauth%s+(.+)$")
+	if unauthTarget then
+		local player = findPlayerByName(unauthTarget)
+		if player then
+			setAuthorized(player, false)
+			refreshAllButtonVisuals()
+		end
+		return
+	end
+
+	local sayMessage = string.match(message or "", "^/say%s+(.+)$")
+	if sayMessage and sayMessage ~= "" then
+		sendChatMessage(sayMessage)
+	end
+end
+
+local function hookLegacyChat(player)
+	if chatConnections[player] then
+		chatConnections[player]:Disconnect()
+	end
+
+	chatConnections[player] = player.Chatted:Connect(function(message)
+		processCommand(player, message)
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	if player ~= localPlayer then
+		hookLegacyChat(player)
+	end
+end
+
+Players.PlayerAdded:Connect(function(player)
+	if player ~= localPlayer then
+		hookLegacyChat(player)
+	end
+	refreshPlayerList()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if chatConnections[player] then
+		chatConnections[player]:Disconnect()
+		chatConnections[player] = nil
+	end
+
+	authorizedControllers[player] = nil
+	buttonByPlayer[player] = nil
+
+	if currentController == player then
+		clearMotion()
+		currentController = nil
+	end
+
+	refreshPlayerList()
+end)
+
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	scrolling.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y + 20)
+end)
+
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	TextChatService.MessageReceived:Connect(function(textChatMessage)
+		if not textChatMessage.TextSource then
+			return
+		end
+		local speaker = Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
+		if speaker then
+			processCommand(speaker, textChatMessage.Text)
+		end
+	end)
+end
+
+refreshPlayerList()
+
+local dragging = false
+local dragStart
+local frameStart
+
+local function startDrag(input)
+	dragging = true
+	dragStart = input.Position
+	frameStart = frame.Position
+end
+
+local function updateDrag(input)
+	if not dragging then
+		return
+	end
+	local delta = input.Position - dragStart
+	frame.Position = UDim2.new(
+		frameStart.X.Scale,
+		frameStart.X.Offset + delta.X,
+		frameStart.Y.Scale,
+		frameStart.Y.Offset + delta.Y
+	)
+end
+
+topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		startDrag(input)
+	end
+end)
+
+topBar.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement then
+		updateDrag(input)
+	end
+end)
