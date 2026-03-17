@@ -388,10 +388,65 @@ local function getCrossOffset(companionIndex)
 	elseif arm == 1 then
 		return Vector3.new(-distance, SHOULDER_HEIGHT_OFFSET, 0)
 	elseif arm == 2 then
-		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, distance)
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET + distance, 0)
 	end
 
-	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, -distance)
+	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET - distance, 0)
+end
+
+local function getTriangleOffset(companionIndex)
+	local row = 0
+	local consumed = 0
+	while consumed + (row + 1) < companionIndex do
+		consumed += row + 1
+		row += 1
+	end
+
+	local indexInRow = companionIndex - consumed - 1
+	local x = (indexInRow - (row / 2)) * FOLLOW_SPACING
+	local y = SHOULDER_HEIGHT_OFFSET + ((2 - row) * FOLLOW_SPACING)
+	return Vector3.new(x, y, 0)
+end
+
+local function getSquareOffset(companionIndex)
+	if companionIndex == 1 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, 0)
+	end
+
+	local remaining = companionIndex - 1
+	local ring = 1
+	while true do
+		local side = ring * 2 + 1
+		local perimeter = (side * 4) - 4
+		if remaining <= perimeter then
+			local half = ring
+			local position = remaining - 1
+			local x
+			local y
+
+			if position < side then
+				x = -half + position
+				y = half
+			elseif position < side + (side - 1) then
+				local p = position - side
+				x = half
+				y = half - (p + 1)
+			elseif position < side + (side - 1) * 2 then
+				local p = position - (side + (side - 1))
+				x = half - (p + 1)
+				y = -half
+			else
+				local p = position - (side + (side - 1) * 2)
+				x = -half
+				y = -half + (p + 1)
+			end
+
+			return Vector3.new(x * FOLLOW_SPACING, SHOULDER_HEIGHT_OFFSET + (y * FOLLOW_SPACING), 0)
+		end
+
+		remaining -= perimeter
+		ring += 1
+	end
 end
 
 local function getCompanionIndex(targetRoot)
@@ -476,6 +531,12 @@ local function startMotion(mode, targetPlayer, optionalStackTarget)
 		elseif motionMode == "cross" then
 			local crossOffset = getCrossOffset(companionIndex)
 			moveNearTarget(targetRoot, CFrame.new(crossOffset), 0.28)
+		elseif motionMode == "triangle" then
+			local triangleOffset = getTriangleOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(triangleOffset), 0.28)
+		elseif motionMode == "square" then
+			local squareOffset = getSquareOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(squareOffset), 0.28)
 		elseif motionMode == "orbit" then
 			angle += deltaTime * (ORBIT_SPEED * math.pi)
 			local slotAngle = (2 * math.pi / companionCount) * (companionIndex - 1)
@@ -614,7 +675,7 @@ subtitle.Position = UDim2.fromOffset(12, 52)
 subtitle.BackgroundTransparency = 1
 subtitle.TextWrapped = true
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /reset /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /check"
+subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /triangle /square /reset /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /check"
 subtitle.TextSize = 12
 subtitle.Font = Enum.Font.Gotham
 subtitle.TextColor3 = Color3.fromRGB(170, 182, 220)
@@ -795,6 +856,12 @@ local function processCommand(speaker, message)
 	elseif normalized == "/cross" then
 		startMotion("cross", speaker)
 		return
+	elseif normalized == "/triangle" then
+		startMotion("triangle", speaker)
+		return
+	elseif normalized == "/square" then
+		startMotion("square", speaker)
+		return
 	elseif normalized == "/fly" or normalized == "/shoulders" then
 		startMotion("shoulders", speaker)
 		return
@@ -817,7 +884,7 @@ local function processCommand(speaker, message)
 		sendChatMessage("[swas] unavailable")
 		return
 	elseif normalized == "/check" then
-		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /reset /say /calc /auth /unauth /check")
+		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /triangle /square /reset /say /calc /auth /unauth /check")
 		return
 	elseif normalized == "/funfact" then
 		sendChatMessage("[funfact] " .. getRandomFunFact())
