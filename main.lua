@@ -1,12 +1,51 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local TextChatService = game:GetService("TextChatService")
-local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Lighting = game:GetService("Lighting")
+local gameRef = game
+if not gameRef or not gameRef.GetService then
+	warn("Controller script requires Roblox game services.")
+	return
+end
 
-local localPlayer = Players.LocalPlayer
-local playerGui = localPlayer:WaitForChild("PlayerGui")
+local function getService(name)
+	local ok, service = pcall(function()
+		return gameRef:GetService(name)
+	end)
+	if ok then
+		return service
+	end
+	return nil
+end
+
+local Players = getService("Players")
+local RunService = getService("RunService")
+local TextChatService = getService("TextChatService")
+local UserInputService = getService("UserInputService")
+local ReplicatedStorage = getService("ReplicatedStorage")
+local Lighting = getService("Lighting")
+
+if not Players or not RunService or not TextChatService or not UserInputService or not ReplicatedStorage or not Lighting then
+	warn("Controller script could not load required Roblox services.")
+	return
+end
+
+local localPlayer = nil
+local startTime = os.clock()
+while not localPlayer and (os.clock() - startTime) < 10 do
+	localPlayer = Players.LocalPlayer
+	if localPlayer then
+		break
+	end
+	task.wait()
+end
+
+if not localPlayer then
+	warn("Controller script could not find LocalPlayer. Ensure this runs as a LocalScript on the client.")
+	return
+end
+
+local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui") or localPlayer:WaitForChild("PlayerGui", 10)
+if not playerGui then
+	warn("Controller script could not find PlayerGui on LocalPlayer.")
+	return
+end
 
 local authorizedControllers = {}
 local primaryController = nil
@@ -27,6 +66,112 @@ local FIREWORKS_DURATION = 5
 local SIDELINE_RIGHT_OFFSET = 5
 local SIDELINE_SPACING = 2.6
 local DETECTION_RADIUS = 18
+local ANTI_AFK_INTERVAL = 15 * 60
+local ANTI_AFK_MOVE_DURATION = 1
+
+local rng = Random.new()
+local funFacts = {
+	"Octopuses have three hearts.",
+	"Honey never spoils and can stay edible for thousands of years.",
+	"Bananas are berries, but strawberries are not.",
+	"A day on Venus is longer than a year on Venus.",
+	"Wombat poop is cube-shaped.",
+	"Sharks existed before trees.",
+	"The Eiffel Tower can grow taller in summer heat.",
+	"Some turtles can breathe through their butts.",
+	"A group of flamingos is called a flamboyance.",
+	"Scotland's national animal is the unicorn.",
+	"Koalas have unique fingerprints like humans.",
+	"The heart of a blue whale is about the size of a car.",
+	"There are more stars in the universe than grains of sand on Earth.",
+	"Your nose can remember around 50,000 different scents.",
+	"The shortest war in history lasted 38 to 45 minutes.",
+	"Sloths can hold their breath longer than dolphins.",
+	"An ostrich's eye is bigger than its brain.",
+	"Cows have best friends and can get stressed when separated.",
+	"Hot water can freeze faster than cold water under some conditions.",
+	"A bolt of lightning is five times hotter than the surface of the sun.",
+	"Sea otters hold hands while sleeping.",
+	"The moon has moonquakes.",
+	"A single cloud can weigh more than a million pounds.",
+	"Butterflies taste with their feet.",
+	"There is a species of jellyfish that is biologically immortal.",
+	"The dot over the letters i and j is called a tittle.",
+	"Avocados are fruit, and technically they are berries.",
+	"The inventor of the frisbee was turned into a frisbee after he died.",
+	"Humans share about 60 percent of their DNA with bananas.",
+	"A snail can sleep for up to three years.",
+	"Rats laugh when tickled.",
+	"There are more possible chess games than atoms in the observable universe.",
+	"The first alarm clock could only ring at 4 a.m.",
+	"Pineapples take about two years to grow.",
+	"A clouded leopard has the longest canine teeth relative to body size of any wild cat.",
+	"The fingerprints of a koala are so close to humans they can confuse crime scenes.",
+	"Bamboo can grow up to about 35 inches in a single day.",
+	"A day on Mercury lasts about 59 Earth days.",
+	"Mantis shrimp can punch faster than a bullet.",
+	"Antarctica is the largest desert in the world.",
+	"An apple, potato, and onion all taste the same if you eat them with your nose plugged.",
+	"You are slightly taller in the morning than at night.",
+	"Some cats are allergic to humans.",
+	"A crocodile cannot stick its tongue out.",
+	"The smell of fresh-cut grass is a plant distress signal.",
+	"Sunsets on Mars are blue.",
+	"A group of crows is called a murder.",
+	"Peanuts are not nuts; they are legumes.",
+	"The first oranges were green.",
+	"The longest hiccuping spree lasted 68 years.",
+	"The average person walks the equivalent of five times around the world in a lifetime.",
+	"Some frogs can freeze solid and then thaw back to life.",
+	"Dolphins have names for each other.",
+	"A shrimp's heart is in its head.",
+	"The Great Wall of China is not visible from space with the naked eye.",
+	"The inventor of the microwave discovered it after a chocolate bar melted in his pocket.",
+	"There are more trees on Earth than stars in the Milky Way.",
+	"A day on Jupiter is about 10 hours long.",
+	"The human brain can generate about 12 to 25 watts of electricity.",
+	"The fingerprints on a hand develop by around 24 weeks in the womb.",
+	"Venus is the hottest planet in our solar system.",
+	"Some metals are so reactive they explode on contact with water.",
+	"Bees can recognize human faces.",
+	"A jiffy is an actual unit of time: 1/100th of a second.",
+	"The first computer bug was an actual moth.",
+	"The Eiffel Tower was originally meant to be temporary.",
+	"There are no muscles in your fingers; movement comes from forearm muscles.",
+	"Platypuses glow under UV light.",
+	"A group of porcupines is called a prickle.",
+	"The shortest complete sentence in English is 'I am.'",
+	"An adult human has fewer bones than a baby.",
+	"Humans are the only animals that blush.",
+	"A leap year doesn't happen every 100 years unless divisible by 400.",
+	"The hottest chili peppers can be over 200 times hotter than jalapenos.",
+	"Some fungi create zombies out of insects.",
+	"There are volcanoes taller than Mount Everest, measured from base to summit, under the ocean.",
+	"Sound travels about four times faster in water than in air.",
+	"The Amazon rainforest produces around 20 percent of the world's oxygen cycling.",
+	"A group of owls is called a parliament.",
+	"Kangaroos cannot walk backward easily.",
+	"The largest snowflake ever recorded was 15 inches wide.",
+	"Saturn would float in water because it is less dense than water.",
+	"The human body contains enough iron to make a small nail.",
+	"Fingernails grow faster than toenails.",
+	"A teaspoon of neutron star would weigh about a billion tons on Earth.",
+	"There are more possible Rubik's Cube combinations than atoms in the solar system.",
+	"Mosquitoes are attracted to certain blood types more than others.",
+	"Some sharks can reproduce without mating.",
+	"The oldest known living tree is over 4,800 years old.",
+	"A blue whale's tongue can weigh as much as an elephant.",
+	"You cannot hum while holding your nose closed.",
+	"There are rivers and lakes under the ocean.",
+	"The first camera photograph took about 8 hours of exposure.",
+	"Shakespeare invented over 1,700 words.",
+	"Some penguins propose with pebbles.",
+	"The speed of a computer mouse is measured in 'Mickeys'.",
+	"An astronaut's height can increase in space.",
+	"There is enough DNA in the average human body to stretch from the sun to Pluto and back.",
+	"Giraffes only need 5 to 30 minutes of sleep per day.",
+	"The first video game is often credited as Tennis for Two from 1958."
+}
 
 local chatConnections = {}
 local buttonByPlayer = {}
@@ -43,10 +188,26 @@ local function normalizeMessage(message)
 	return string.lower((message or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+local function stripVisualInstance(instance)
+	if instance:IsA("BasePart") then
+		instance.LocalTransparencyModifier = 1
+		instance.CastShadow = false
+		instance.Reflectance = 0
+	elseif instance:IsA("Decal") or instance:IsA("Texture") then
+		instance.Transparency = 1
+	elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail") or instance:IsA("Beam") then
+		instance.Enabled = false
+	elseif instance:IsA("Fire") or instance:IsA("Smoke") or instance:IsA("Sparkles") then
+		instance.Enabled = false
+	elseif instance:IsA("PointLight") or instance:IsA("SpotLight") or instance:IsA("SurfaceLight") then
+		instance.Enabled = false
+	end
+end
+
 local function optimizeClientPerformance()
 	pcall(function()
 		Lighting.GlobalShadows = false
-		Lighting.Brightness = 1
+		Lighting.Brightness = 0
 		Lighting.EnvironmentDiffuseScale = 0
 		Lighting.EnvironmentSpecularScale = 0
 		Lighting.FogEnd = 100000
@@ -58,15 +219,24 @@ local function optimizeClientPerformance()
 		gameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
 	end)
 
+	pcall(function()
+		workspace.StreamingEnabled = true
+	end)
+
+	pcall(function()
+		workspace.Terrain.WaterWaveSize = 0
+		workspace.Terrain.WaterWaveSpeed = 0
+		workspace.Terrain.WaterReflectance = 0
+		workspace.Terrain.WaterTransparency = 1
+	end)
+
 	for _, instance in ipairs(workspace:GetDescendants()) do
-		if instance:IsA("Decal") or instance:IsA("Texture") then
-			instance.Transparency = 1
-		elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail") or instance:IsA("Beam") then
-			instance.Enabled = false
-		elseif instance:IsA("Fire") or instance:IsA("Smoke") or instance:IsA("Sparkles") then
-			instance.Enabled = false
-		end
+		stripVisualInstance(instance)
 	end
+
+	workspace.DescendantAdded:Connect(function(instance)
+		stripVisualInstance(instance)
+	end)
 end
 
 local function updatePreferredPrimary()
@@ -103,6 +273,11 @@ local function calculateExpression(rawExpression)
 	return leftNumber / rightNumber, nil
 end
 
+local function getRandomFunFact()
+	local randomIndex = rng:NextInteger(1, #funFacts)
+	return funFacts[randomIndex]
+end
+
 local function sendChatMessage(message)
 	if not message or message == "" then
 		return
@@ -132,12 +307,50 @@ local function clearMotion()
 	motionMode = "stop"
 end
 
-local function moveNearTarget(targetRoot, offset)
+local function moveNearTarget(targetRoot, offset, smoothFactor)
 	local _, localRoot = characterAndRoot(localPlayer)
 	if not localRoot or not targetRoot then
 		return
 	end
-	localRoot.CFrame = targetRoot.CFrame * offset
+
+	local targetCFrame = targetRoot.CFrame * offset
+	local distance = (localRoot.Position - targetCFrame.Position).Magnitude
+	if distance <= 0.03 then
+		return
+	end
+
+	local alpha = math.clamp(smoothFactor or 1, 0, 1)
+	if alpha >= 1 then
+		localRoot.CFrame = targetCFrame
+	else
+		localRoot.CFrame = localRoot.CFrame:Lerp(targetCFrame, alpha)
+	end
+
+	if motionMode ~= "fireworks" then
+		localRoot.AssemblyLinearVelocity = Vector3.zero
+		localRoot.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+
+local function getCrossOffset(companionIndex)
+	if companionIndex == 1 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, 0)
+	end
+
+	local ringIndex = companionIndex - 2
+	local arm = ringIndex % 4
+	local step = math.floor(ringIndex / 4) + 1
+	local distance = FOLLOW_SPACING * step
+
+	if arm == 0 then
+		return Vector3.new(distance, SHOULDER_HEIGHT_OFFSET, 0)
+	elseif arm == 1 then
+		return Vector3.new(-distance, SHOULDER_HEIGHT_OFFSET, 0)
+	elseif arm == 2 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, distance)
+	end
+
+	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, -distance)
 end
 
 local function getCompanionIndex(targetRoot)
@@ -204,28 +417,37 @@ local function startMotion(mode, targetPlayer, optionalStackTarget)
 			local _, stackRoot = characterAndRoot(targetPlayerForStack)
 			if stackRoot then
 				local heightOffset = 3 + (companionIndex - 1) * 2.5
-				moveNearTarget(stackRoot, CFrame.new(0, heightOffset, 0))
+				moveNearTarget(stackRoot, CFrame.new(0, heightOffset, 0), 0.35)
+			end
+		elseif motionMode == "swarm" then
+			local targetPlayerForSwarm = stackTarget or currentController
+			local _, swarmRoot = characterAndRoot(targetPlayerForSwarm)
+			if swarmRoot then
+				moveNearTarget(swarmRoot, CFrame.new(0, 0, 0), 0.45)
 			end
 		elseif motionMode == "side_line" then
 			local centeredIndex = companionIndex - ((companionCount + 1) / 2)
 			local zOffset = centeredIndex * SIDELINE_SPACING
-			moveNearTarget(targetRoot, CFrame.new(SIDELINE_RIGHT_OFFSET, SHOULDER_HEIGHT_OFFSET, zOffset))
+			moveNearTarget(targetRoot, CFrame.new(SIDELINE_RIGHT_OFFSET, SHOULDER_HEIGHT_OFFSET, zOffset), 0.3)
 		elseif motionMode == "follow" or motionMode == "line" then
 			local spacingOffset = FOLLOW_SPACING * companionIndex
-			moveNearTarget(targetRoot, CFrame.new(0, 0, -spacingOffset))
+			moveNearTarget(targetRoot, CFrame.new(0, SHOULDER_HEIGHT_OFFSET, -spacingOffset), 0.28)
+		elseif motionMode == "cross" then
+			local crossOffset = getCrossOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(crossOffset), 0.28)
 		elseif motionMode == "orbit" then
 			angle += deltaTime * (ORBIT_SPEED * math.pi)
 			local slotAngle = (2 * math.pi / companionCount) * (companionIndex - 1)
 			local finalAngle = angle + slotAngle
 			local x = math.cos(finalAngle) * ORBIT_RADIUS
 			local z = math.sin(finalAngle) * ORBIT_RADIUS
-			moveNearTarget(targetRoot, CFrame.new(x, ORBIT_HEIGHT, z))
+			moveNearTarget(targetRoot, CFrame.new(x, ORBIT_HEIGHT, z), 0.45)
 		elseif motionMode == "shoulders" then
 			local side = companionIndex == 1 and -SHOULDER_SIDE_OFFSET or SHOULDER_SIDE_OFFSET
 			if companionIndex > 2 then
 				side = ((companionIndex % 2) == 0 and 1 or -1) * (SHOULDER_SIDE_OFFSET + math.floor(companionIndex / 2) * 1.5)
 			end
-			moveNearTarget(targetRoot, CFrame.new(side, SHOULDER_HEIGHT_OFFSET, 0))
+			moveNearTarget(targetRoot, CFrame.new(side, SHOULDER_HEIGHT_OFFSET, 0), 0.25)
 		end
 	end)
 end
@@ -287,7 +509,23 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "ControllerMenu"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = false
+screenGui.DisplayOrder = 10
 screenGui.Parent = playerGui
+
+local coverGui = Instance.new("ScreenGui")
+coverGui.Name = "BlueCover"
+coverGui.ResetOnSpawn = false
+coverGui.IgnoreGuiInset = true
+coverGui.DisplayOrder = 1
+coverGui.Parent = playerGui
+
+local coverFrame = Instance.new("Frame")
+coverFrame.Name = "Cover"
+coverFrame.Size = UDim2.fromScale(1, 1)
+coverFrame.Position = UDim2.fromScale(0, 0)
+coverFrame.BackgroundColor3 = Color3.fromRGB(20, 75, 190)
+coverFrame.BorderSizePixel = 0
+coverFrame.Parent = coverGui
 
 local frame = Instance.new("Frame")
 frame.Name = "Main"
@@ -335,7 +573,7 @@ subtitle.Position = UDim2.fromOffset(12, 52)
 subtitle.BackgroundTransparency = 1
 subtitle.TextWrapped = true
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /cmds"
+subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /t"
 subtitle.TextSize = 12
 subtitle.Font = Enum.Font.Gotham
 subtitle.TextColor3 = Color3.fromRGB(170, 182, 220)
@@ -513,6 +751,9 @@ local function processCommand(speaker, message)
 	elseif normalized == "/line" then
 		startMotion("line", speaker)
 		return
+	elseif normalized == "/cross" then
+		startMotion("cross", speaker)
+		return
 	elseif normalized == "/fly" or normalized == "/shoulders" then
 		startMotion("shoulders", speaker)
 		return
@@ -524,8 +765,11 @@ local function processCommand(speaker, message)
 		currentController = nil
 		stackTarget = nil
 		return
-	elseif normalized == "/cmds" then
-		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /say /calc /auth /unauth /cmds")
+	elseif normalized == "/t" then
+		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /say /calc /auth /unauth /t")
+		return
+	elseif normalized == "/funfact" then
+		sendChatMessage("[funfact] " .. getRandomFunFact())
 		return
 	end
 
@@ -536,6 +780,17 @@ local function processCommand(speaker, message)
 			startMotion("stack", speaker, stackPlayer)
 		else
 			sendChatMessage("[stack] player not found")
+		end
+		return
+	end
+
+	local swarmTargetName = string.match(message or "", "^/swarm%s+(.+)$")
+	if swarmTargetName then
+		local swarmTargetPlayer = findPlayerByName(swarmTargetName)
+		if swarmTargetPlayer then
+			startMotion("swarm", speaker, swarmTargetPlayer)
+		else
+			sendChatMessage("[swarm] player not found")
 		end
 		return
 	end
@@ -628,6 +883,21 @@ searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	refreshPlayerList()
 end)
 
+local function startAntiAfk()
+	task.spawn(function()
+		while true do
+			task.wait(ANTI_AFK_INTERVAL)
+			local character = localPlayer.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				humanoid:Move(Vector3.new(1, 0, 0), true)
+				task.wait(ANTI_AFK_MOVE_DURATION)
+				humanoid:Move(Vector3.zero, true)
+			end
+		end
+	end)
+end
+
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	TextChatService.MessageReceived:Connect(function(textChatMessage)
 		if not textChatMessage.TextSource then
@@ -641,6 +911,7 @@ if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 end
 
 optimizeClientPerformance()
+startAntiAfk()
 refreshPlayerList()
 
 local dragging = false
