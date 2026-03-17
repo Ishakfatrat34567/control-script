@@ -16,8 +16,8 @@ local UserInputService = getService("UserInputService")
 local ReplicatedStorage = getService("ReplicatedStorage")
 local Lighting = getService("Lighting")
 
-if not Players or not RunService or not TextChatService or not UserInputService or not ReplicatedStorage or not Lighting then
-	warn("Controller script could not load required Roblox services.")
+if not Players or not RunService then
+	warn("Controller script could not load required Roblox services (Players/RunService).")
 	return
 end
 
@@ -244,14 +244,16 @@ local function stripVisualInstance(instance)
 end
 
 local function optimizeClientPerformance()
-	pcall(function()
-		Lighting.GlobalShadows = false
-		Lighting.Brightness = 0
-		Lighting.EnvironmentDiffuseScale = 0
-		Lighting.EnvironmentSpecularScale = 0
-		Lighting.FogEnd = 100000
-		Lighting.Technology = Enum.Technology.Compatibility
-	end)
+	if Lighting then
+		pcall(function()
+			Lighting.GlobalShadows = false
+			Lighting.Brightness = 0
+			Lighting.EnvironmentDiffuseScale = 0
+			Lighting.EnvironmentSpecularScale = 0
+			Lighting.FogEnd = 100000
+			Lighting.Technology = Enum.Technology.Compatibility
+		end)
+	end
 
 	pcall(function()
 		local gameSettings = UserSettings():GetService("UserGameSettings")
@@ -322,12 +324,16 @@ local function sendChatMessage(message)
 		return
 	end
 
-	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 		local textChannels = TextChatService:FindFirstChild("TextChannels")
 		local general = textChannels and textChannels:FindFirstChild("RBXGeneral")
 		if general then
 			general:SendAsync(message)
+			return
 		end
+	end
+
+	if not ReplicatedStorage then
 		return
 	end
 
@@ -1078,7 +1084,7 @@ local function startAntiAfk()
 	end)
 end
 
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	TextChatService.MessageReceived:Connect(function(textChatMessage)
 		if not textChatMessage.TextSource then
 			return
@@ -1137,8 +1143,10 @@ topBar.InputEnded:Connect(function(input)
 	end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement then
-		updateDrag(input)
-	end
-end)
+if UserInputService then
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateDrag(input)
+		end
+	end)
+end
