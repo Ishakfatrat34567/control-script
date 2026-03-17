@@ -1,8 +1,3 @@
-local gameRef = game
-if not gameRef or not gameRef.GetService then
-	warn("Controller script requires Roblox game services.")
-	return
-end
 
 local function getService(name)
 	local ok, service = pcall(function()
