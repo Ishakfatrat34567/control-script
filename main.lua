@@ -1,28 +1,45 @@
 local gameRef = game
-if not gameRef or not gameRef.GetService then
+if not gameRef then
 	warn("Controller script requires Roblox game services.")
 	return
 end
 
-local function getService(name)
-	local ok, service = pcall(function()
-		return gameRef:GetService(name)
-	end)
-	if ok then
-		return service
+pcall(function()
+	if gameRef.IsLoaded and not gameRef:IsLoaded() then
+		gameRef.Loaded:Wait()
+	end
+end)
+
+local function getService(name, timeoutSeconds)
+	local timeout = timeoutSeconds or 8
+	local started = os.clock()
+	while (os.clock() - started) <= timeout do
+		local service = gameRef:FindFirstChild(name)
+		if service then
+			return service
+		end
+
+		local ok, fetched = pcall(function()
+			return gameRef:GetService(name)
+		end)
+		if ok and fetched then
+			return fetched
+		end
+
+		task.wait(0.1)
 	end
 	return nil
 end
 
-local Players = getService("Players")
-local RunService = getService("RunService")
-local TextChatService = getService("TextChatService")
-local UserInputService = getService("UserInputService")
-local ReplicatedStorage = getService("ReplicatedStorage")
-local Lighting = getService("Lighting")
+local Players = getService("Players", 10)
+local RunService = getService("RunService", 10)
+local TextChatService = getService("TextChatService", 2)
+local UserInputService = getService("UserInputService", 2)
+local ReplicatedStorage = getService("ReplicatedStorage", 2)
+local Lighting = getService("Lighting", 2)
 
-if not Players or not RunService or not TextChatService or not UserInputService or not ReplicatedStorage or not Lighting then
-	warn("Controller script could not load required Roblox services.")
+if not Players or not RunService then
+	warn("Controller script could not load required Roblox services after waiting (Players/RunService). Run this as a LocalScript in the client.")
 	return
 end
 
@@ -65,6 +82,9 @@ local FIREWORKS_SPEED = 40
 local FIREWORKS_DURATION = 5
 local SIDELINE_RIGHT_OFFSET = 5
 local SIDELINE_SPACING = 2.6
+local STAIR_STEP_DEPTH = 4
+local STAIR_STEP_HEIGHT = 2
+local STAIR_RECYCLE_MARGIN = 0.85
 local DETECTION_RADIUS = 18
 local ANTI_AFK_INTERVAL = 15 * 60
 local ANTI_AFK_MOVE_DURATION = 1
@@ -246,14 +266,16 @@ local function stripVisualInstance(instance)
 end
 
 local function optimizeClientPerformance()
-	pcall(function()
-		Lighting.GlobalShadows = false
-		Lighting.Brightness = 0
-		Lighting.EnvironmentDiffuseScale = 0
-		Lighting.EnvironmentSpecularScale = 0
-		Lighting.FogEnd = 100000
-		Lighting.Technology = Enum.Technology.Compatibility
-	end)
+	if Lighting then
+		pcall(function()
+			Lighting.GlobalShadows = false
+			Lighting.Brightness = 0
+			Lighting.EnvironmentDiffuseScale = 0
+			Lighting.EnvironmentSpecularScale = 0
+			Lighting.FogEnd = 100000
+			Lighting.Technology = Enum.Technology.Compatibility
+		end)
+	end
 
 	pcall(function()
 		local gameSettings = UserSettings():GetService("UserGameSettings")
@@ -324,12 +346,16 @@ local function sendChatMessage(message)
 		return
 	end
 
-	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 		local textChannels = TextChatService:FindFirstChild("TextChannels")
 		local general = textChannels and textChannels:FindFirstChild("RBXGeneral")
 		if general then
 			general:SendAsync(message)
+			return
 		end
+	end
+
+	if not ReplicatedStorage then
 		return
 	end
 
@@ -373,6 +399,29 @@ local function moveNearTarget(targetRoot, offset, smoothFactor)
 	end
 end
 
+local function moveNearWorldPosition(worldPosition, smoothFactor)
+	local _, localRoot = characterAndRoot(localPlayer)
+	if not localRoot or not worldPosition then
+		return
+	end
+
+	local targetCFrame = CFrame.new(worldPosition)
+	local distance = (localRoot.Position - worldPosition).Magnitude
+	if distance <= 0.03 then
+		return
+	end
+
+	local alpha = math.clamp(smoothFactor or 1, 0, 1)
+	if alpha >= 1 then
+		localRoot.CFrame = targetCFrame
+	else
+		localRoot.CFrame = localRoot.CFrame:Lerp(targetCFrame, alpha)
+	end
+
+	localRoot.AssemblyLinearVelocity = Vector3.zero
+	localRoot.AssemblyAngularVelocity = Vector3.zero
+end
+
 local function getCrossOffset(companionIndex)
 	if companionIndex == 1 then
 		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, 0)
@@ -388,10 +437,133 @@ local function getCrossOffset(companionIndex)
 	elseif arm == 1 then
 		return Vector3.new(-distance, SHOULDER_HEIGHT_OFFSET, 0)
 	elseif arm == 2 then
-		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, distance)
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET + distance, 0)
 	end
 
-	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, -distance)
+	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET - distance, 0)
+end
+
+local function getTriangleOffset(companionIndex)
+	local row = 0
+	local consumed = 0
+	while consumed + (row + 1) < companionIndex do
+		consumed += row + 1
+		row += 1
+	end
+
+	local indexInRow = companionIndex - consumed - 1
+	local x = (indexInRow - (row / 2)) * FOLLOW_SPACING
+	local y = SHOULDER_HEIGHT_OFFSET + ((2 - row) * FOLLOW_SPACING)
+	return Vector3.new(x, y, 0)
+end
+
+local function getSquareOffset(companionIndex)
+	if companionIndex == 1 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, 0)
+	end
+
+	local remaining = companionIndex - 1
+	local ring = 1
+	while true do
+		local side = ring * 2 + 1
+		local perimeter = (side * 4) - 4
+		if remaining <= perimeter then
+			local half = ring
+			local position = remaining - 1
+			local x
+			local y
+
+			if position < side then
+				x = -half + position
+				y = half
+			elseif position < side + (side - 1) then
+				local p = position - side
+				x = half
+				y = half - (p + 1)
+			elseif position < side + (side - 1) * 2 then
+				local p = position - (side + (side - 1))
+				x = half - (p + 1)
+				y = -half
+			else
+				local p = position - (side + (side - 1) * 2)
+				x = -half
+				y = -half + (p + 1)
+			end
+
+			return Vector3.new(x * FOLLOW_SPACING, SHOULDER_HEIGHT_OFFSET + (y * FOLLOW_SPACING), 0)
+		end
+
+		remaining -= perimeter
+		ring += 1
+	end
+end
+
+local function getStairsWorldPosition(originPosition, forwardDirection, stepNumber)
+	local horizontalOffset = forwardDirection * (stepNumber * STAIR_STEP_DEPTH)
+	local verticalOffset = Vector3.new(0, SHOULDER_HEIGHT_OFFSET + (stepNumber * STAIR_STEP_HEIGHT), 0)
+	return originPosition + horizontalOffset + verticalOffset
+end
+
+local function getVerticalLineOffset(companionIndex, companionCount)
+	local centeredIndex = companionIndex - ((companionCount + 1) / 2)
+	return Vector3.new(0, SHOULDER_HEIGHT_OFFSET + (centeredIndex * FOLLOW_SPACING), 0)
+end
+
+local function getZigZagOffset(companionIndex)
+	local depth = companionIndex * FOLLOW_SPACING
+	local side = ((companionIndex % 2) == 0) and FOLLOW_SPACING or -FOLLOW_SPACING
+	return Vector3.new(side, SHOULDER_HEIGHT_OFFSET, -depth)
+end
+
+local function getDiamondOffset(companionIndex)
+	if companionIndex == 1 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, 0)
+	end
+
+	local remaining = companionIndex - 1
+	local ring = 1
+	while true do
+		local ringCount = ring * 4
+		if remaining <= ringCount then
+			local position = remaining - 1
+			local side = math.floor(position / ring)
+			local offsetInSide = position % ring
+			local x = 0
+			local y = 0
+
+			if side == 0 then
+				x = offsetInSide + 1
+				y = ring - (offsetInSide + 1)
+			elseif side == 1 then
+				x = ring - (offsetInSide + 1)
+				y = -(offsetInSide + 1)
+			elseif side == 2 then
+				x = -(offsetInSide + 1)
+				y = -(ring - (offsetInSide + 1))
+			else
+				x = -(ring - (offsetInSide + 1))
+				y = offsetInSide + 1
+			end
+
+			return Vector3.new(x * FOLLOW_SPACING, SHOULDER_HEIGHT_OFFSET + (y * FOLLOW_SPACING), 0)
+		end
+		remaining -= ringCount
+		ring += 1
+	end
+end
+
+local function getShieldOffset(companionIndex, companionCount)
+	if companionCount <= 1 then
+		return Vector3.new(0, SHOULDER_HEIGHT_OFFSET, -FOLLOW_SPACING)
+	end
+
+	local t = (companionIndex - 1) / math.max(companionCount - 1, 1)
+	local angle = (-math.pi / 2) + (math.pi * t)
+	local radius = FOLLOW_SPACING * 2.2
+	local x = math.cos(angle) * radius
+	local y = SHOULDER_HEIGHT_OFFSET + (math.sin(angle) * (FOLLOW_SPACING * 0.75))
+	local z = -FOLLOW_SPACING * 2
+	return Vector3.new(x, y, z)
 end
 
 local function getCompanionIndex(targetRoot)
@@ -425,6 +597,10 @@ local function startMotion(mode, targetPlayer, optionalStackTarget)
 	stackTarget = optionalStackTarget
 	local angle = 0
 	local elapsed = 0
+	local stairsOrigin = nil
+	local stairsForward = nil
+	local stairsBaseStep = 0
+	local frozenCFrame = nil
 
 	motionConnection = RunService.Heartbeat:Connect(function(deltaTime)
 		if not currentController or not authorizedControllers[currentController] or currentController.Parent ~= Players then
@@ -476,6 +652,69 @@ local function startMotion(mode, targetPlayer, optionalStackTarget)
 		elseif motionMode == "cross" then
 			local crossOffset = getCrossOffset(companionIndex)
 			moveNearTarget(targetRoot, CFrame.new(crossOffset), 0.28)
+		elseif motionMode == "triangle" then
+			local triangleOffset = getTriangleOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(triangleOffset), 0.28)
+		elseif motionMode == "square" then
+			local squareOffset = getSquareOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(squareOffset), 0.28)
+		elseif motionMode == "stairs" then
+			if not stairsOrigin then
+				stairsOrigin = targetRoot.Position
+			end
+
+			local flattenedLook = Vector3.new(targetRoot.CFrame.LookVector.X, 0, targetRoot.CFrame.LookVector.Z)
+			if flattenedLook.Magnitude > 0.001 then
+				stairsForward = flattenedLook.Unit
+			elseif not stairsForward then
+				stairsForward = Vector3.new(0, 0, -1)
+			end
+
+			local flatPlayer = Vector3.new(targetRoot.Position.X, 0, targetRoot.Position.Z)
+			local flatOrigin = Vector3.new(stairsOrigin.X, 0, stairsOrigin.Z)
+			local progress = (flatPlayer - flatOrigin):Dot(stairsForward)
+			local topStepDistance = (stairsBaseStep + companionCount) * STAIR_STEP_DEPTH
+			local recycleThreshold = topStepDistance - (STAIR_STEP_DEPTH * STAIR_RECYCLE_MARGIN)
+			while progress >= recycleThreshold do
+				stairsBaseStep += 1
+				topStepDistance = (stairsBaseStep + companionCount) * STAIR_STEP_DEPTH
+				recycleThreshold = topStepDistance - (STAIR_STEP_DEPTH * STAIR_RECYCLE_MARGIN)
+			end
+
+			local stepNumber = stairsBaseStep + companionIndex
+			local stairPosition = getStairsWorldPosition(stairsOrigin, stairsForward, stepNumber)
+			moveNearWorldPosition(stairPosition, 0.35)
+		elseif motionMode == "vline" then
+			local vlineOffset = getVerticalLineOffset(companionIndex, companionCount)
+			moveNearTarget(targetRoot, CFrame.new(vlineOffset), 0.28)
+		elseif motionMode == "zigzag" then
+			local zigZagOffset = getZigZagOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(zigZagOffset), 0.28)
+		elseif motionMode == "diamond" then
+			local diamondOffset = getDiamondOffset(companionIndex)
+			moveNearTarget(targetRoot, CFrame.new(diamondOffset), 0.28)
+		elseif motionMode == "spiral" then
+			angle += deltaTime * (ORBIT_SPEED * math.pi)
+			local slotAngle = (2 * math.pi / math.max(companionCount, 1)) * (companionIndex - 1)
+			local finalAngle = angle + slotAngle
+			local radius = FOLLOW_SPACING + (companionIndex * 0.8)
+			local x = math.cos(finalAngle) * radius
+			local z = math.sin(finalAngle) * radius
+			local y = SHOULDER_HEIGHT_OFFSET + (companionIndex * 1.4)
+			moveNearTarget(targetRoot, CFrame.new(x, y, z), 0.4)
+		elseif motionMode == "shield" then
+			local shieldOffset = getShieldOffset(companionIndex, companionCount)
+			moveNearTarget(targetRoot, CFrame.new(shieldOffset), 0.28)
+		elseif motionMode == "freeze" then
+			local _, localRoot = characterAndRoot(localPlayer)
+			if localRoot then
+				if not frozenCFrame then
+					frozenCFrame = localRoot.CFrame
+				end
+				localRoot.CFrame = frozenCFrame
+				localRoot.AssemblyLinearVelocity = Vector3.zero
+				localRoot.AssemblyAngularVelocity = Vector3.zero
+			end
 		elseif motionMode == "orbit" then
 			angle += deltaTime * (ORBIT_SPEED * math.pi)
 			local slotAngle = (2 * math.pi / companionCount) * (companionIndex - 1)
@@ -614,7 +853,7 @@ subtitle.Position = UDim2.fromOffset(12, 52)
 subtitle.BackgroundTransparency = 1
 subtitle.TextWrapped = true
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /reset /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /check"
+subtitle.Text = "Commands: /follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /triangle /square /stairs /freeze /vline /zigzag /diamond /spiral /shield /reset /say <msg> /calc <a+b|a/b> /auth <name> /unauth <name> /check"
 subtitle.TextSize = 12
 subtitle.Font = Enum.Font.Gotham
 subtitle.TextColor3 = Color3.fromRGB(170, 182, 220)
@@ -795,6 +1034,33 @@ local function processCommand(speaker, message)
 	elseif normalized == "/cross" then
 		startMotion("cross", speaker)
 		return
+	elseif normalized == "/triangle" then
+		startMotion("triangle", speaker)
+		return
+	elseif normalized == "/square" then
+		startMotion("square", speaker)
+		return
+	elseif normalized == "/stairs" then
+		startMotion("stairs", speaker)
+		return
+	elseif normalized == "/freeze" then
+		startMotion("freeze", speaker)
+		return
+	elseif normalized == "/vline" then
+		startMotion("vline", speaker)
+		return
+	elseif normalized == "/zigzag" then
+		startMotion("zigzag", speaker)
+		return
+	elseif normalized == "/diamond" then
+		startMotion("diamond", speaker)
+		return
+	elseif normalized == "/spiral" then
+		startMotion("spiral", speaker)
+		return
+	elseif normalized == "/shield" then
+		startMotion("shield", speaker)
+		return
 	elseif normalized == "/fly" or normalized == "/shoulders" then
 		startMotion("shoulders", speaker)
 		return
@@ -817,7 +1083,7 @@ local function processCommand(speaker, message)
 		sendChatMessage("[swas] unavailable")
 		return
 	elseif normalized == "/check" then
-		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /reset /say /calc /auth /unauth /check")
+		sendChatMessage("/follow /stack [name] /side line /orbit /line /fly /fireworks /stop /funfact /swarm [name] /cross /triangle /square /stairs /freeze /vline /zigzag /diamond /spiral /shield /reset /say /calc /auth /unauth /check")
 		return
 	elseif normalized == "/funfact" then
 		sendChatMessage("[funfact] " .. getRandomFunFact())
@@ -952,7 +1218,7 @@ local function startAntiAfk()
 	end)
 end
 
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	TextChatService.MessageReceived:Connect(function(textChatMessage)
 		if not textChatMessage.TextSource then
 			return
@@ -1011,8 +1277,10 @@ topBar.InputEnded:Connect(function(input)
 	end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement then
-		updateDrag(input)
-	end
-end)
+if UserInputService then
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateDrag(input)
+		end
+	end)
+end
